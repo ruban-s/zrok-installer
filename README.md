@@ -4,19 +4,27 @@ One-command installer for self-hosted [zrok](https://zrok.io) instances. Deploys
 
 ## Quick Start
 
-### 1. Download
+### One-liner (interactive)
+
+```bash
+curl -sSf https://raw.githubusercontent.com/ruban-s/zrok-installer/main/install-zrok.sh | sudo bash
+```
+
+### Or download and run
+
+**1. Download**
 
 ```bash
 curl -O https://raw.githubusercontent.com/ruban-s/zrok-installer/main/install-zrok.sh
 ```
 
-### 2. Make executable
+**2. Make executable**
 
 ```bash
 chmod +x install-zrok.sh
 ```
 
-### 3. Run (interactive)
+**3. Run**
 
 ```bash
 sudo bash install-zrok.sh
