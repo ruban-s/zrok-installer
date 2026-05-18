@@ -73,6 +73,7 @@ DRY_RUN=false
 AUTO_YES=false
 DO_UNINSTALL=false
 INSTALL_DIR_SET_BY_FLAG=false
+DEPLOY_ENV=""  # local or cloud
 
 # Generated secrets
 ZITI_PWD=""
@@ -783,6 +784,7 @@ parse_args() {
             --oauth-google-id)     OAUTH_GOOGLE_ID="$2"; shift 2 ;;
             --oauth-google-secret) OAUTH_GOOGLE_SECRET="$2"; shift 2 ;;
             --install-dir)      ZROK_INSTALL_DIR="$2"; INSTALL_DIR_SET_BY_FLAG=true; shift 2 ;;
+            --env)              DEPLOY_ENV="$2"; shift 2 ;;
             --uninstall)        DO_UNINSTALL=true; shift ;;
             --dry-run)          DRY_RUN=true; shift ;;
             --yes|-y)           AUTO_YES=true; shift ;;
@@ -818,6 +820,7 @@ OPTIONAL:
   --dns-provider NAME    DNS provider for ACME: cloudflare|digitalocean|route53|godaddy|namecheap
   --dns-token TOKEN      API token for DNS provider
   --install-dir DIR      Installation directory (default: /opt/zrok-instance)
+  --env ENV              Deployment environment: cloud | local-dynamic | local-static
 
 MODULES:
   --with-oauth           Enable OAuth authentication (GitHub/Google)
@@ -868,6 +871,55 @@ EXAMPLES:
     --dns-provider cloudflare \
     --dns-token "your-token"
 HELP
+}
+
+prompt_deploy_environment() {
+    if [[ -n "${DEPLOY_ENV}" ]]; then
+        return 0
+    fi
+
+    if [[ "${AUTO_YES}" == "true" ]] || [[ "${INTERACTIVE}" == "false" ]]; then
+        DEPLOY_ENV="cloud"
+        return 0
+    fi
+
+    echo ""
+    echo -e "  $(_c "${_BOLD}")Where is this machine?$(_c "${_RESET}")"
+    echo -e "  $(_c "${_BOLD}")1)$(_c "${_RESET}") Cloud / VPS (static public IP)"
+    echo -e "  $(_c "${_BOLD}")2)$(_c "${_RESET}") Local machine — dynamic IP (behind router, IP changes)"
+    echo -e "  $(_c "${_BOLD}")3)$(_c "${_RESET}") Local machine — static IP (behind router, fixed IP from ISP)"
+    echo -n "       Choice [1]: "
+    local choice
+    read -r choice < /dev/tty
+    choice="${choice:-1}"
+
+    case "${choice}" in
+        1) DEPLOY_ENV="cloud" ;;
+        2) DEPLOY_ENV="local-dynamic" ;;
+        3) DEPLOY_ENV="local-static" ;;
+        *) DEPLOY_ENV="cloud" ;;
+    esac
+
+    case "${DEPLOY_ENV}" in
+        local-dynamic)
+            echo ""
+            log_info "Local (dynamic IP) selected. After installation:"
+            log_info "  1. Dynamic DNS will auto-update your IP every 5 min"
+            log_info "  2. Port-forward 443, 8080, 18080, 3022 on your router"
+            ;;
+        local-static)
+            echo ""
+            local pub_ip
+            pub_ip="$(curl -sf --max-time 5 https://ifconfig.me 2>/dev/null || echo "")"
+            if [[ -n "${pub_ip}" ]]; then
+                log_info "Your public IP: ${pub_ip}"
+                log_info "Point DNS records to this IP:"
+                log_info "  ${ZROK_DNS_ZONE:-"your-domain"}    → A → ${pub_ip}"
+                log_info "  *.${ZROK_DNS_ZONE:-"your-domain"}  → A → ${pub_ip}"
+            fi
+            log_info "Port-forward 443, 8080, 18080, 3022 on your router"
+            ;;
+    esac
 }
 
 prompt_install_location() {
@@ -2740,6 +2792,7 @@ main() {
     echo -e "$(_c "${_BOLD}")  Configuration$(_c "${_RESET}")"
     print_separator
 
+    prompt_deploy_environment
     prompt_install_location
     prompt_required_settings
     prompt_deployment_mode
@@ -2784,10 +2837,142 @@ main() {
     generate_readme
     print_summary
 
+    if [[ "${DEPLOY_ENV}" == "local-dynamic" ]] && [[ "${DRY_RUN}" != "true" ]]; then
+        setup_dynamic_dns
+    elif [[ "${DEPLOY_ENV}" == "local-static" ]] && [[ "${DRY_RUN}" != "true" ]]; then
+        print_port_forwarding_reminder
+    fi
+
     if [[ "${DRY_RUN}" == "true" ]]; then
         echo ""
         log_info "=== DRY RUN COMPLETE — no changes were made ==="
     fi
+}
+
+print_port_forwarding_reminder() {
+    echo ""
+    print_separator
+    echo -e "  $(_c "${_YELLOW}${_BOLD}")Router Port Forwarding Required$(_c "${_RESET}")"
+    print_separator
+    local local_ip
+    local_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || ifconfig 2>/dev/null | grep 'inet ' | grep -v 127.0.0.1 | awk '{print $2}' | head -1 || echo "this-machine")"
+    echo ""
+    echo -e "  Forward these ports from your router to $(_c "${_BOLD}")${local_ip}$(_c "${_RESET}"):"
+    echo -e "    $(_c "${_BOLD}")443$(_c "${_RESET}")   → ${local_ip}  (HTTPS)"
+    echo -e "    $(_c "${_BOLD}")8080$(_c "${_RESET}")  → ${local_ip}  (zrok frontend)"
+    echo -e "    $(_c "${_BOLD}")18080$(_c "${_RESET}") → ${local_ip}  (zrok API)"
+    echo -e "    $(_c "${_BOLD}")3022$(_c "${_RESET}")  → ${local_ip}  (OpenZiti)"
+    echo ""
+    local pub_ip
+    pub_ip="$(curl -sf --max-time 5 https://ifconfig.me 2>/dev/null || echo "")"
+    if [[ -n "${pub_ip}" ]]; then
+        echo -e "  Your public IP: $(_c "${_BOLD}")${pub_ip}$(_c "${_RESET}")"
+        echo -e "  Point DNS:  ${ZROK_DNS_ZONE}   → A → ${pub_ip}"
+        echo -e "  Point DNS:  *.${ZROK_DNS_ZONE} → A → ${pub_ip}"
+    fi
+    echo ""
+}
+
+setup_dynamic_dns() {
+    echo ""
+    print_separator
+    echo -e "  $(_c "${_BOLD}")Dynamic DNS Setup$(_c "${_RESET}")"
+    print_separator
+    echo ""
+    log_info "Local deployment needs Dynamic DNS to keep your domain pointing to your IP."
+
+    local ddns_script="${ZROK_INSTALL_DIR}/ddns-update.sh"
+    local ddns_url="https://raw.githubusercontent.com/ruban-s/zrok-installer/main/ddns-update.sh"
+
+    log_info "Downloading DDNS updater..."
+    curl -sSfL "${ddns_url}" -o "${ddns_script}" 2>/dev/null || {
+        log_warn "Could not download ddns-update.sh"
+        log_info "Download manually: ${ddns_url}"
+        return 0
+    }
+    chmod +x "${ddns_script}"
+
+    if [[ "${DNS_PROVIDER}" == "cloudflare" ]] && [[ -n "${DNS_TOKEN}" ]]; then
+        log_info "Configuring DDNS with your Cloudflare token..."
+
+        local config_dir="${HOME}/.zrok-ddns"
+        mkdir -p "${config_dir}"
+
+        local zone_root
+        zone_root="$(echo "${ZROK_DNS_ZONE}" | awk -F. '{print $(NF-1)"."$NF}')"
+
+        cat > "${config_dir}/config" << DDNSCFG
+DDNS_DOMAIN="${ZROK_DNS_ZONE}"
+CF_API_TOKEN="${DNS_TOKEN}"
+CF_ZONE_ROOT="${zone_root}"
+DDNS_INTERVAL="5"
+DDNSCFG
+        chmod 600 "${config_dir}/config"
+
+        log_info "Running initial DNS update..."
+        bash "${ddns_script}" --run 2>&1 || true
+
+        log_info "Installing scheduled job (every 5 min)..."
+        bash "${ddns_script}" --run 2>/dev/null || true
+
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+            local plist_path="${HOME}/Library/LaunchAgents/com.zrok.ddns.plist"
+            mkdir -p "${HOME}/Library/LaunchAgents"
+            cat > "${plist_path}" << PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.zrok.ddns</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>${ddns_script}</string>
+        <string>--run</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>StandardOutPath</key>
+    <string>${config_dir}/ddns.log</string>
+    <key>StandardErrorPath</key>
+    <string>${config_dir}/ddns.log</string>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+PLISTEOF
+            launchctl unload "${plist_path}" 2>/dev/null || true
+            launchctl load "${plist_path}" 2>/dev/null || true
+            log_success "launchd job installed (every 5 min)"
+        else
+            local cron_marker="# zrok-ddns"
+            (crontab -l 2>/dev/null | grep -v "${cron_marker}") | {
+                cat
+                echo "*/5 * * * * ${ddns_script} --run >> ${config_dir}/ddns.log 2>&1 ${cron_marker}"
+            } | crontab -
+            log_success "Cron job installed (every 5 min)"
+        fi
+
+        log_success "Dynamic DNS configured!"
+        echo ""
+        echo -e "  IP auto-updates every 5 minutes"
+        echo -e "  Log: ${config_dir}/ddns.log"
+        echo -e "  Status: bash ${ddns_script} --status"
+        echo -e "  Remove: bash ${ddns_script} --remove"
+    else
+        log_warn "Auto DDNS setup only available for Cloudflare."
+        log_info "Run manually: bash ${ddns_script} --setup"
+    fi
+
+    echo ""
+    echo -e "  $(_c "${_YELLOW}${_BOLD}")Router Port Forwarding Required:$(_c "${_RESET}")"
+    echo -e "    Forward these ports from your router to this machine:"
+    echo -e "    $(_c "${_BOLD}")443$(_c "${_RESET}")   → $(hostname -I 2>/dev/null | awk '{print $1}' || echo "this-machine")  (HTTPS)"
+    echo -e "    $(_c "${_BOLD}")8080$(_c "${_RESET}")  → same  (zrok frontend)"
+    echo -e "    $(_c "${_BOLD}")18080$(_c "${_RESET}") → same  (zrok API)"
+    echo -e "    $(_c "${_BOLD}")3022$(_c "${_RESET}")  → same  (OpenZiti)"
+    echo ""
 }
 
 main "$@"
