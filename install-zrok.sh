@@ -72,6 +72,7 @@ OAUTH_GOOGLE_SECRET=""
 DRY_RUN=false
 AUTO_YES=false
 DO_UNINSTALL=false
+INSTALL_DIR_SET_BY_FLAG=false
 
 # Generated secrets
 ZITI_PWD=""
@@ -781,7 +782,7 @@ parse_args() {
             --oauth-github-secret) OAUTH_GITHUB_SECRET="$2"; shift 2 ;;
             --oauth-google-id)     OAUTH_GOOGLE_ID="$2"; shift 2 ;;
             --oauth-google-secret) OAUTH_GOOGLE_SECRET="$2"; shift 2 ;;
-            --install-dir)      ZROK_INSTALL_DIR="$2"; shift 2 ;;
+            --install-dir)      ZROK_INSTALL_DIR="$2"; INSTALL_DIR_SET_BY_FLAG=true; shift 2 ;;
             --uninstall)        DO_UNINSTALL=true; shift ;;
             --dry-run)          DRY_RUN=true; shift ;;
             --yes|-y)           AUTO_YES=true; shift ;;
@@ -867,6 +868,46 @@ EXAMPLES:
     --dns-provider cloudflare \
     --dns-token "your-token"
 HELP
+}
+
+prompt_install_location() {
+    if [[ "${INSTALL_DIR_SET_BY_FLAG}" == "true" ]]; then
+        return 0
+    fi
+
+    if [[ "${AUTO_YES}" == "true" ]] || [[ "${INTERACTIVE}" == "false" ]]; then
+        return 0
+    fi
+
+    echo ""
+    echo -e "  $(_c "${_BOLD}")Where to install?$(_c "${_RESET}")"
+    echo -e "  $(_c "${_BOLD}")1)$(_c "${_RESET}") Current directory ($(pwd))"
+    echo -e "  $(_c "${_BOLD}")2)$(_c "${_RESET}") Default (${ZROK_INSTALL_DIR})"
+    echo -e "  $(_c "${_BOLD}")3)$(_c "${_RESET}") Custom path"
+    echo -n "       Choice [2]: "
+    local choice
+    read -r choice < /dev/tty
+    choice="${choice:-2}"
+
+    case "${choice}" in
+        1)
+            ZROK_INSTALL_DIR="$(pwd)"
+            ;;
+        2)
+            ;;
+        3)
+            echo -n -e "$(_c "${_YELLOW}")  [?]$(_c "${_RESET}") Install path: "
+            local custom_path
+            read -r custom_path < /dev/tty
+            if [[ -n "${custom_path}" ]]; then
+                ZROK_INSTALL_DIR="${custom_path}"
+            fi
+            ;;
+        *)
+            ;;
+    esac
+
+    log_success "Install location: ${ZROK_INSTALL_DIR}"
 }
 
 prompt_required_settings() {
@@ -2699,6 +2740,7 @@ main() {
     echo -e "$(_c "${_BOLD}")  Configuration$(_c "${_RESET}")"
     print_separator
 
+    prompt_install_location
     prompt_required_settings
     prompt_deployment_mode
 
