@@ -347,7 +347,8 @@ detect_os() {
             return
             ;;
         Linux)
-            PLATFORM="linux" # shellcheck disable=SC2034
+            # shellcheck disable=SC2034
+            PLATFORM="linux"
             ;;
         *)
             log_error "Unsupported platform: ${kernel}"
@@ -503,7 +504,8 @@ detect_init_system() {
         return
     fi
     if [[ -d /run/systemd/system ]] || systemctl --version &>/dev/null 2>&1; then
-        HAS_SYSTEMD=true # shellcheck disable=SC2034
+        # shellcheck disable=SC2034
+        HAS_SYSTEMD=true
         log_success "Init system: systemd"
     else
         log_error "systemd not detected. This installer requires systemd (or macOS with Docker)."
@@ -569,7 +571,8 @@ check_prerequisites() {
     fi
 
     if [[ "${DEPLOY_MODE}" == "baremetal" ]]; then
-        for cmd in "tar"; do # shellcheck disable=SC2043
+        # shellcheck disable=SC2043
+        for cmd in "tar"; do
             if ! command -v "${cmd}" &>/dev/null; then
                 missing+=("${cmd}")
             fi
