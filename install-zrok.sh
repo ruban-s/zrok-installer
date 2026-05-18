@@ -21,7 +21,7 @@ readonly INSTALLER_VERSION="1.0.0"
 readonly DEFAULT_INSTALL_DIR="/opt/zrok-instance"
 readonly STATE_FILE_NAME=".install-state.json"
 readonly CREDENTIALS_FILE_NAME=".credentials"
-readonly ZROK_FETCH_URL="https://get.openziti.io/zrok-instance/fetch.bash"
+readonly ZROK_FETCH_URL="https://raw.githubusercontent.com/openziti/zrok/main/docker/compose/zrok2-instance/fetch.bash"
 readonly ZROK_INSTALL_URL="https://get.openziti.io/install.bash"
 readonly DOCKER_INSTALL_URL="https://get.docker.com"
 
@@ -967,6 +967,56 @@ prompt_dns_provider() {
             prompt_secret "API token for ${DNS_PROVIDER}" "DNS_TOKEN"
         fi
     fi
+
+    if [[ -z "${DNS_TOKEN}" ]]; then
+        log_error "DNS API token is required for TLS certificate provisioning."
+        exit 1
+    fi
+
+    validate_dns_token
+}
+
+validate_dns_token() {
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        return 0
+    fi
+
+    case "${DNS_PROVIDER}" in
+        cloudflare)
+            log_substep "Verifying Cloudflare API token..."
+            local cf_response
+            cf_response="$(curl -sf -H "Authorization: Bearer ${DNS_TOKEN}" \
+                "https://api.cloudflare.com/client/v4/user/tokens/verify" 2>/dev/null || echo "")"
+            if echo "${cf_response}" | grep -q '"success":true'; then
+                log_success "Cloudflare token valid"
+            else
+                log_warn "Cloudflare token verification failed"
+                local cf_error
+                cf_error="$(echo "${cf_response}" | jq -r '.errors[0].message // "unknown error"' 2>/dev/null || echo "could not reach API")"
+                log_warn "  Reason: ${cf_error}"
+                if ! confirm "Continue with this token anyway?"; then
+                    exit 1
+                fi
+            fi
+            ;;
+        digitalocean)
+            log_substep "Verifying DigitalOcean API token..."
+            local do_response
+            do_response="$(curl -sf -H "Authorization: Bearer ${DNS_TOKEN}" \
+                "https://api.digitalocean.com/v2/account" 2>/dev/null || echo "")"
+            if echo "${do_response}" | grep -q '"account"'; then
+                log_success "DigitalOcean token valid"
+            else
+                log_warn "DigitalOcean token verification failed"
+                if ! confirm "Continue with this token anyway?"; then
+                    exit 1
+                fi
+            fi
+            ;;
+        *)
+            log_info "Token validation not available for ${DNS_PROVIDER} — skipping"
+            ;;
+    esac
 }
 
 prompt_optional_modules() {
@@ -1126,12 +1176,15 @@ install_docker_compose() {
 fetch_compose_fallback() {
     local tmpdir
     tmpdir="$(mktemp -d)"
+    log_substep "Downloading zrok compose files from GitHub..."
     curl -sSfL "https://github.com/openziti/zrok/archive/refs/heads/main.zip" -o "${tmpdir}/main.zip" || {
         log_error "Failed to download zrok repository"
         exit 1
     }
-    unzip -q -j -d "${ZROK_INSTALL_DIR}" "${tmpdir}/main.zip" '*/docker/compose/zrok-instance/*' || {
+    unzip -q -j -d "${ZROK_INSTALL_DIR}" "${tmpdir}/main.zip" '*/docker/compose/zrok2-instance/*' || {
         log_error "Failed to extract compose files"
+        log_error "The zrok repository structure may have changed."
+        log_error "Check: https://github.com/openziti/zrok/tree/main/docker/compose"
         exit 1
     }
     rm -rf "${tmpdir}"
