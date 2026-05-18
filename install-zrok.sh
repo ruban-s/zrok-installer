@@ -11,7 +11,7 @@
 #   sudo bash install-zrok.sh --dry-run --domain test.example.com
 #   bash install-zrok.sh --domain share.example.com --mode docker --tls caddy  # macOS (no sudo needed for Docker Desktop)
 
-set -euo pipefail
+set -Eeuo pipefail
 
 # ============================================================================
 # CONSTANTS
@@ -84,6 +84,30 @@ FRONTEND_IDENTITY=""
 
 # Cleanup tracking
 CLEANUP_ACTIONS=()
+TEMP_DIR=""
+
+cleanup() {
+    local exit_code=$?
+    trap - EXIT ERR INT TERM
+
+    if [[ ${exit_code} -ne 0 ]] && [[ "${DRY_RUN:-false}" != "true" ]]; then
+        echo "" >&2
+        echo " [ERROR] Installation failed (exit code: ${exit_code})" >&2
+        if [[ ${#CLEANUP_ACTIONS[@]} -gt 0 ]]; then
+            echo " [INFO] Rolling back partial changes..." >&2
+            local i
+            for (( i=${#CLEANUP_ACTIONS[@]}-1; i>=0; i-- )); do
+                eval "${CLEANUP_ACTIONS[i]}" 2>/dev/null || true
+            done
+        fi
+        echo " [INFO] Partial state may exist at ${ZROK_INSTALL_DIR:-/opt/zrok-instance}" >&2
+    fi
+
+    if [[ -d "${TEMP_DIR:-}" ]]; then
+        rm -rf "${TEMP_DIR}"
+    fi
+}
+trap cleanup EXIT ERR INT TERM
 
 # ============================================================================
 # SECTION B: OUTPUT HELPERS
@@ -162,7 +186,7 @@ prompt_input() {
         return
     fi
 
-    eval "${varname}='${answer}'"
+    printf -v "${varname}" '%s' "${answer}"
 }
 
 prompt_secret() {
@@ -179,7 +203,7 @@ prompt_secret() {
     read -rs answer < /dev/tty
     echo ""
 
-    eval "${varname}='${answer}'"
+    printf -v "${varname}" '%s' "${answer}"
 }
 
 prompt_choice() {
@@ -213,7 +237,7 @@ prompt_choice() {
     local selected="${options[$((choice - 1))]}"
     selected="${selected%% *}"
     selected="${selected,,}"
-    eval "${varname}='${selected}'"
+    printf -v "${varname}" '%s' "${selected}"
 }
 
 spinner() {
@@ -234,6 +258,38 @@ spinner() {
     printf "\r       %-$((${#msg} + 4))s\r" " "
     wait "${pid}" 2>/dev/null
     return $?
+}
+
+validate_domain() {
+    local domain="$1"
+    if [[ ! "${domain}" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?(\.[a-zA-Z]{2,})+$ ]]; then
+        log_error "Invalid domain: ${domain}"
+        return 1
+    fi
+}
+
+validate_email() {
+    local email="$1"
+    if [[ ! "${email}" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        log_error "Invalid email: ${email}"
+        return 1
+    fi
+}
+
+validate_ip() {
+    local ip="$1"
+    if [[ ! "${ip}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        log_error "Invalid IP address: ${ip}"
+        return 1
+    fi
+}
+
+validate_port() {
+    local port="$1"
+    if [[ ! "${port}" =~ ^[0-9]+$ ]] || [[ "${port}" -lt 1 ]] || [[ "${port}" -gt 65535 ]]; then
+        log_error "Invalid port: ${port}"
+        return 1
+    fi
 }
 
 print_banner() {
@@ -258,6 +314,10 @@ BANNER
 
 print_separator() {
     echo "  ─────────────────────────────────────────────────────"
+}
+
+retry_curl() {
+    curl --retry 3 --retry-delay 2 --retry-all-errors "$@"
 }
 
 # ============================================================================
@@ -633,6 +693,32 @@ check_dns() {
     fi
 }
 
+check_resources() {
+    local available_kb
+    available_kb="$(df -k "${ZROK_INSTALL_DIR}" 2>/dev/null | awk 'NR==2{print $4}')" || true
+    if [[ -n "${available_kb}" ]] && [[ "${available_kb}" -lt 2097152 ]]; then
+        log_warn "Low disk space: $(( available_kb / 1024 ))MB available (recommend 2GB+)"
+        if ! confirm "Continue with limited disk space?"; then
+            exit 1
+        fi
+    fi
+
+    if [[ "${DEPLOY_MODE}" == "docker" ]]; then
+        local mem_kb=0
+        if [[ "${IS_MACOS}" == "true" ]]; then
+            mem_kb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 ))
+        else
+            mem_kb="$(awk '/MemAvailable/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+        fi
+        if [[ "${mem_kb}" -gt 0 ]] && [[ "${mem_kb}" -lt 1048576 ]]; then
+            log_warn "Low memory: $(( mem_kb / 1024 ))MB available (recommend 1GB+)"
+            if ! confirm "Continue with limited memory?"; then
+                exit 1
+            fi
+        fi
+    fi
+}
+
 install_docker_if_missing() {
     if [[ "${HAS_DOCKER}" == "true" ]]; then
         return 0
@@ -679,7 +765,13 @@ install_docker_if_missing() {
         exit 1
     fi
 
-    curl -fsSL "${DOCKER_INSTALL_URL}" | sh || {
+    local docker_installer="${TEMP_DIR}/docker-install.sh"
+    retry_curl -fsSL "${DOCKER_INSTALL_URL}" -o "${docker_installer}" || {
+        log_error "Failed to download Docker installer."
+        log_error "Install Docker manually: https://docs.docker.com/engine/install/"
+        exit 1
+    }
+    sh "${docker_installer}" || {
         log_error "Docker installation failed."
         log_error "Install Docker manually: https://docs.docker.com/engine/install/"
         exit 1
@@ -964,7 +1056,10 @@ prompt_install_location() {
 
 prompt_required_settings() {
     prompt_input "zrok DNS zone (e.g., share.example.com)" "" "ZROK_DNS_ZONE"
+    validate_domain "${ZROK_DNS_ZONE}" || exit 1
+
     prompt_input "Admin email address" "" "ZROK_USER_EMAIL"
+    validate_email "${ZROK_USER_EMAIL}" || exit 1
 
     if [[ -z "${ZROK_USER_PWD}" ]]; then
         echo -n -e "$(_c "${_YELLOW}")  [?]$(_c "${_RESET}") Admin password (blank = auto-generate): "
@@ -1118,7 +1213,7 @@ validate_dns_token() {
                 --user "${aws_key}:${aws_secret}" 2>/dev/null || echo "")"
             if echo "${aws_response}" | grep -q "GetCallerIdentityResult"; then
                 local aws_account
-                aws_account="$(echo "${aws_response}" | grep -oP '<Account>\K[^<]+' || echo "verified")"
+                aws_account="$(echo "${aws_response}" | sed -n 's/.*<Account>\([^<]*\)<.*/\1/p' || echo "verified")"
                 log_success "AWS credentials valid (account: ${aws_account})"
             else
                 log_warn "AWS credentials verification failed"
@@ -1252,8 +1347,8 @@ install_docker_compose() {
     if [[ "${ENABLE_ORGANIZATIONS}" == "true" ]]; then TOTAL_STEPS=$((TOTAL_STEPS + 1)); fi
 
     log_step "Preparing installation directory"
-    mkdir -p "${ZROK_INSTALL_DIR}"
-    cd "${ZROK_INSTALL_DIR}"
+    mkdir -p "${ZROK_INSTALL_DIR}" || { log_error "Failed to create ${ZROK_INSTALL_DIR}"; exit 1; }
+    cd "${ZROK_INSTALL_DIR}" || { log_error "Failed to enter ${ZROK_INSTALL_DIR}"; exit 1; }
 
     log_step "Fetching Docker Compose files"
     if [[ "${DRY_RUN}" == "true" ]]; then
@@ -1280,6 +1375,7 @@ install_docker_compose() {
             log_error "  cd ${ZROK_INSTALL_DIR} && docker compose logs"
             exit 1
         }
+        CLEANUP_ACTIONS+=("cd '${ZROK_INSTALL_DIR}' && docker compose down 2>/dev/null || true")
         log_success "Services started"
     fi
 
@@ -1295,7 +1391,7 @@ install_docker_compose() {
         log_info "[DRY RUN] Would create account: ${ZROK_USER_EMAIL}"
         ACCOUNT_TOKEN="DRY-RUN-TOKEN"
     else
-        create_docker_admin_account
+        create_admin_account
     fi
 
     if [[ "${ENABLE_ORGANIZATIONS}" == "true" ]]; then
@@ -1303,7 +1399,7 @@ install_docker_compose() {
         if [[ "${DRY_RUN}" == "true" ]]; then
             log_info "[DRY RUN] Would create default organization"
         else
-            configure_docker_organizations
+            configure_organizations
         fi
     fi
 
@@ -1325,11 +1421,11 @@ fetch_compose_files() {
     local failed=false
     for f in "${compose_files[@]}"; do
         log_substep "Downloading ${f}..."
-        if curl -sSfL "${ZROK_COMPOSE_BASE_URL}/${f}" -o "${ZROK_INSTALL_DIR}/${f}" 2>/dev/null; then
+        if retry_curl -sSfL "${ZROK_COMPOSE_BASE_URL}/${f}" -o "${ZROK_INSTALL_DIR}/${f}" 2>/dev/null; then
             true
         else
             log_warn "Failed to download ${f} from CDN, trying GitHub..."
-            if curl -sSfL "https://raw.githubusercontent.com/openziti/zrok/main/docker/compose/zrok2-instance/${f}" \
+            if retry_curl -sSfL "https://raw.githubusercontent.com/openziti/zrok/main/docker/compose/zrok2-instance/${f}" \
                 -o "${ZROK_INSTALL_DIR}/${f}" 2>/dev/null; then
                 true
             else
@@ -1357,6 +1453,7 @@ generate_docker_env() {
         traefik) compose_file="compose.yml:compose.traefik.yml" ;;
     esac
 
+    install -m 600 /dev/null "${env_file}"
     cat > "${env_file}" << ENVEOF
 # zrok Self-Hosted Configuration
 # Generated by installer v${INSTALLER_VERSION} on $(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -1437,38 +1534,14 @@ ENVEOF
     chmod 600 "${env_file}"
 }
 
-get_caddy_plugin_name() {
-    case "${DNS_PROVIDER}" in
-        cloudflare)   echo "cloudflare" ;;
-        digitalocean) echo "digitalocean" ;;
-        route53)      echo "route53" ;;
-        godaddy)      echo "godaddy" ;;
-        namecheap)    echo "namecheap" ;;
-        *)            echo "${DNS_PROVIDER}" ;;
-    esac
+get_dns_plugin_name() {
+    local prefix="${1:-}"
+    echo "${prefix}${DNS_PROVIDER}"
 }
 
-get_traefik_provider_name() {
-    case "${DNS_PROVIDER}" in
-        cloudflare)   echo "cloudflare" ;;
-        digitalocean) echo "digitalocean" ;;
-        route53)      echo "route53" ;;
-        godaddy)      echo "godaddy" ;;
-        namecheap)    echo "namecheap" ;;
-        *)            echo "${DNS_PROVIDER}" ;;
-    esac
-}
-
-get_certbot_plugin_name() {
-    case "${DNS_PROVIDER}" in
-        cloudflare)   echo "certbot-dns-cloudflare" ;;
-        digitalocean) echo "certbot-dns-digitalocean" ;;
-        route53)      echo "certbot-dns-route53" ;;
-        godaddy)      echo "certbot-dns-godaddy" ;;
-        namecheap)    echo "certbot-dns-namecheap" ;;
-        *)            echo "certbot-dns-${DNS_PROVIDER}" ;;
-    esac
-}
+get_caddy_plugin_name()   { get_dns_plugin_name; }
+get_traefik_provider_name() { get_dns_plugin_name; }
+get_certbot_plugin_name() { get_dns_plugin_name "certbot-dns-"; }
 
 wait_for_docker_healthy() {
     local timeout=180
@@ -1501,12 +1574,21 @@ wait_for_docker_healthy() {
     fi
 }
 
-create_docker_admin_account() {
+create_admin_account() {
     log_substep "Creating account: ${ZROK_USER_EMAIL}"
 
+    local zrok_cmd
+    if [[ "${DEPLOY_MODE}" == "docker" ]]; then
+        zrok_cmd="docker compose exec -T zrok-controller zrok"
+    else
+        export ZROK_API_ENDPOINT="http://127.0.0.1:18080"
+        export ZROK_ADMIN_TOKEN="${ZROK_ADMIN_TOKEN}"
+        sleep 5
+        zrok_cmd="zrok"
+    fi
+
     local output
-    output="$(docker compose exec -T zrok-controller \
-        zrok admin create account "${ZROK_USER_EMAIL}" "${ZROK_USER_PWD}" 2>&1)" || {
+    output="$(${zrok_cmd} admin create account "${ZROK_USER_EMAIL}" "${ZROK_USER_PWD}" 2>&1)" || {
         if echo "${output}" | grep -qi "already exists"; then
             log_info "Account already exists"
             ACCOUNT_TOKEN="(existing account)"
@@ -1526,20 +1608,27 @@ create_docker_admin_account() {
     fi
 }
 
-configure_docker_organizations() {
+configure_organizations() {
+    local zrok_cmd
+    if [[ "${DEPLOY_MODE}" == "docker" ]]; then
+        zrok_cmd="docker compose exec -T zrok-controller zrok"
+    else
+        export ZROK_API_ENDPOINT="http://127.0.0.1:18080"
+        export ZROK_ADMIN_TOKEN="${ZROK_ADMIN_TOKEN}"
+        zrok_cmd="zrok"
+    fi
+
     local output
-    output="$(docker compose exec -T zrok-controller \
-        zrok admin create organization -d "Default Organization" 2>&1)" || {
+    output="$(${zrok_cmd} admin create organization -d "Default Organization" 2>&1)" || {
         log_warn "Organization creation returned non-zero (may already exist)"
     }
 
     local org_token
-    org_token="$(echo "${output}" | grep -oP "token '\K[^']+" || echo "")"
+    org_token="$(echo "${output}" | sed -n "s/.*token '\\([^']*\\)'.*/\\1/p" || echo "")"
 
     if [[ -n "${org_token}" ]]; then
         log_substep "Organization token: ${org_token}"
-        docker compose exec -T zrok-controller \
-            zrok admin create org-member "${org_token}" "${ZROK_USER_EMAIL}" 2>&1 || true
+        ${zrok_cmd} admin create org-member "${org_token}" "${ZROK_USER_EMAIL}" 2>&1 || true
         log_success "Organization configured"
     else
         log_warn "Could not extract organization token from output"
@@ -1570,7 +1659,10 @@ install_bare_metal() {
     if [[ "${ENABLE_ORGANIZATIONS}" == "true" ]]; then TOTAL_STEPS=$((TOTAL_STEPS + 1)); fi
 
     log_step "Preparing installation directory"
-    mkdir -p "${ZROK_INSTALL_DIR}/etc" "${ZROK_INSTALL_DIR}/data"
+    mkdir -p "${ZROK_INSTALL_DIR}/etc" "${ZROK_INSTALL_DIR}/data" || {
+        log_error "Failed to create ${ZROK_INSTALL_DIR}"
+        exit 1
+    }
 
     log_step "Installing OpenZiti"
     install_openziti
@@ -1601,7 +1693,7 @@ install_bare_metal() {
         log_info "[DRY RUN] Would create account: ${ZROK_USER_EMAIL}"
         ACCOUNT_TOKEN="DRY-RUN-TOKEN"
     else
-        create_baremetal_admin_account
+        create_admin_account
     fi
 
     if [[ "${ENABLE_METRICS}" == "true" ]]; then
@@ -1611,7 +1703,7 @@ install_bare_metal() {
 
     if [[ "${ENABLE_ORGANIZATIONS}" == "true" ]]; then
         log_step "Configuring organizations"
-        configure_baremetal_organizations
+        configure_organizations
     fi
 }
 
@@ -1622,10 +1714,16 @@ install_openziti() {
     fi
 
     log_substep "Setting up OpenZiti package repository..."
-    curl -sSf "${ZROK_INSTALL_URL}" | bash -s openziti &>/dev/null || {
-        log_warn "OpenZiti install script failed; trying manual repo setup..."
+    local openziti_installer="${TEMP_DIR}/openziti-install.bash"
+    if retry_curl -sSf "${ZROK_INSTALL_URL}" -o "${openziti_installer}" 2>/dev/null; then
+        bash "${openziti_installer}" openziti &>/dev/null || {
+            log_warn "OpenZiti install script failed; trying manual repo setup..."
+            install_openziti_manual
+        }
+    else
+        log_warn "Failed to download OpenZiti installer; trying manual repo setup..."
         install_openziti_manual
-    }
+    fi
 
     if command -v ziti &>/dev/null; then
         log_success "OpenZiti installed"
@@ -1675,13 +1773,22 @@ install_zrok_package() {
     fi
 
     log_substep "Installing zrok package..."
-    curl -sSf "${ZROK_INSTALL_URL}" | bash -s zrok &>/dev/null || {
-        log_warn "zrok install script failed; trying package manager..."
+    local zrok_installer="${TEMP_DIR}/zrok-install.bash"
+    if retry_curl -sSf "${ZROK_INSTALL_URL}" -o "${zrok_installer}" 2>/dev/null; then
+        bash "${zrok_installer}" zrok &>/dev/null || {
+            log_warn "zrok install script failed; trying package manager..."
+            ${PKG_INSTALL} zrok &>/dev/null || {
+                log_error "Failed to install zrok package"
+                exit 1
+            }
+        }
+    else
+        log_warn "Failed to download zrok installer; trying package manager..."
         ${PKG_INSTALL} zrok &>/dev/null || {
             log_error "Failed to install zrok package"
             exit 1
         }
-    }
+    fi
 
     if command -v zrok &>/dev/null; then
         local ver
@@ -1701,6 +1808,7 @@ generate_ctrl_yml() {
         return 0
     fi
 
+    install -m 600 /dev/null "${ctrl_file}"
     cat > "${ctrl_file}" << CTRLEOF
 v:                  4
 
@@ -1787,10 +1895,10 @@ bootstrap_zrok() {
         exit 1
     }
 
-    FRONTEND_IDENTITY="$(echo "${output}" | grep -oP "frontend identity: \K\S+" || echo "")"
+    FRONTEND_IDENTITY="$(echo "${output}" | sed -n 's/.*frontend identity: \([^ ]*\).*/\1/p' || echo "")"
 
     if [[ -z "${FRONTEND_IDENTITY}" ]]; then
-        FRONTEND_IDENTITY="$(echo "${output}" | grep -oP "ziti id '\K[^']+" | tail -1 || echo "")"
+        FRONTEND_IDENTITY="$(echo "${output}" | sed -n "s/.*ziti id '\\([^']*\\)'.*/\\1/p" | tail -1 || echo "")"
     fi
 
     if [[ -n "${FRONTEND_IDENTITY}" ]]; then
@@ -1809,6 +1917,7 @@ generate_frontend_yml() {
         return 0
     fi
 
+    install -m 600 /dev/null "${frontend_file}"
     cat > "${frontend_file}" << FRONTEOF
 v:                  3
 host_match:         ${ZROK_DNS_ZONE}
@@ -2038,9 +2147,9 @@ http:
 DYNEOF
 
     if [[ -n "${provider_env}" ]]; then
-        mkdir -p /etc/traefik
+        mkdir -p -m 700 /etc/traefik
+        install -m 600 /dev/null /etc/traefik/.env
         echo -e "${provider_env}" > /etc/traefik/.env
-        chmod 600 /etc/traefik/.env
     fi
 }
 
@@ -2110,10 +2219,10 @@ obtain_wildcard_cert() {
 
     case "${DNS_PROVIDER}" in
         cloudflare)
+            install -m 600 /dev/null "${cred_dir}/cloudflare.ini"
             cat > "${cred_dir}/cloudflare.ini" << CFEOF
 dns_cloudflare_api_token = ${DNS_TOKEN}
 CFEOF
-            chmod 600 "${cred_dir}/cloudflare.ini"
             certbot certonly \
                 --dns-cloudflare \
                 --dns-cloudflare-credentials "${cred_dir}/cloudflare.ini" \
@@ -2128,10 +2237,10 @@ CFEOF
             }
             ;;
         digitalocean)
+            install -m 600 /dev/null "${cred_dir}/digitalocean.ini"
             cat > "${cred_dir}/digitalocean.ini" << DOEOF
 dns_digitalocean_token = ${DNS_TOKEN}
 DOEOF
-            chmod 600 "${cred_dir}/digitalocean.ini"
             certbot certonly \
                 --dns-digitalocean \
                 --dns-digitalocean-credentials "${cred_dir}/digitalocean.ini" \
@@ -2317,6 +2426,7 @@ start_services() {
         journalctl -u zrok-controller --no-pager -n 20
         exit 1
     }
+    CLEANUP_ACTIONS+=("systemctl stop zrok-controller 2>/dev/null || true")
     log_substep "zrok-controller started"
 
     sleep 3
@@ -2326,6 +2436,7 @@ start_services() {
         journalctl -u zrok-frontend --no-pager -n 20
         exit 1
     }
+    CLEANUP_ACTIONS+=("systemctl stop zrok-frontend 2>/dev/null || true")
     log_substep "zrok-frontend started"
 
     if [[ "${ENABLE_METRICS}" == "true" ]] && [[ -f /etc/systemd/system/zrok-metrics-bridge.service ]]; then
@@ -2336,28 +2447,6 @@ start_services() {
     fi
 
     log_success "All services running"
-}
-
-create_baremetal_admin_account() {
-    export ZROK_API_ENDPOINT="http://127.0.0.1:18080"
-    export ZROK_ADMIN_TOKEN="${ZROK_ADMIN_TOKEN}"
-
-    sleep 5
-
-    local output
-    output="$(zrok admin create account "${ZROK_USER_EMAIL}" "${ZROK_USER_PWD}" 2>&1)" || {
-        if echo "${output}" | grep -qi "already exists"; then
-            log_info "Account already exists"
-            ACCOUNT_TOKEN="(existing)"
-            return 0
-        fi
-        log_error "Failed to create account:"
-        log_error "${output}"
-        exit 1
-    }
-
-    ACCOUNT_TOKEN="$(echo "${output}" | tr -s ' ' | grep -oE '[A-Za-z0-9]{12,}' | tail -1 || echo "")"
-    log_success "Account created. Token: ${ACCOUNT_TOKEN:-"(check logs)"}"
 }
 
 install_metrics_pipeline() {
@@ -2388,30 +2477,6 @@ install_metrics_pipeline() {
     fi
 
     log_success "Metrics pipeline configured (check InfluxDB setup)"
-}
-
-configure_baremetal_organizations() {
-    if [[ "${DRY_RUN}" == "true" ]]; then
-        log_info "[DRY RUN] Would create default organization"
-        return 0
-    fi
-
-    export ZROK_API_ENDPOINT="http://127.0.0.1:18080"
-    export ZROK_ADMIN_TOKEN="${ZROK_ADMIN_TOKEN}"
-
-    local output
-    output="$(zrok admin create organization -d "Default Organization" 2>&1)" || {
-        log_warn "Organization creation failed (may already exist)"
-        return 0
-    }
-
-    local org_token
-    org_token="$(echo "${output}" | grep -oP "token '\K[^']+" || echo "")"
-
-    if [[ -n "${org_token}" ]]; then
-        zrok admin create org-member "${org_token}" "${ZROK_USER_EMAIL}" 2>&1 || true
-        log_success "Organization configured: ${org_token}"
-    fi
 }
 
 # ============================================================================
@@ -2511,10 +2576,11 @@ save_credentials() {
         return 0
     fi
 
+    install -m 600 /dev/null "${cred_file}"
     cat > "${cred_file}" << CREDEOF
 # zrok Self-Hosted Credentials
 # Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-# KEEP THIS FILE SECURE — chmod 600
+# KEEP THIS FILE SECURE
 
 ZROK_DNS_ZONE=${ZROK_DNS_ZONE}
 ZROK_USER_EMAIL=${ZROK_USER_EMAIL}
@@ -2686,6 +2752,7 @@ save_state() {
         return 0
     fi
 
+    install -m 600 /dev/null "${state_file}"
     cat > "${state_file}" << STATEEOF
 {
     "installer_version": "${INSTALLER_VERSION}",
@@ -2722,7 +2789,7 @@ open_firewall_ports() {
         return 0
     fi
 
-    if ! confirm "Open required ports (443, 18080, 8080, 3022) in ${FIREWALL_TYPE}?"; then
+    if ! confirm "Open required ports (${REQUIRED_PORTS[*]}) in ${FIREWALL_TYPE}?"; then
         return 0
     fi
 
@@ -2733,21 +2800,21 @@ open_firewall_ports() {
 
     case "${FIREWALL_TYPE}" in
         ufw)
-            for port in 443 18080 8080 3022; do
+            for port in "${REQUIRED_PORTS[@]}"; do
                 ufw allow "${port}/tcp" &>/dev/null || true
             done
             ufw reload &>/dev/null || true
             log_success "UFW ports opened"
             ;;
         firewalld)
-            for port in 443 18080 8080 3022; do
+            for port in "${REQUIRED_PORTS[@]}"; do
                 firewall-cmd --permanent --add-port="${port}/tcp" &>/dev/null || true
             done
             firewall-cmd --reload &>/dev/null || true
             log_success "firewalld ports opened"
             ;;
         iptables)
-            for port in 443 18080 8080 3022; do
+            for port in "${REQUIRED_PORTS[@]}"; do
                 iptables -A INPUT -p tcp --dport "${port}" -j ACCEPT 2>/dev/null || true
             done
             log_success "iptables rules added (not persisted — install iptables-persistent)"
@@ -2761,6 +2828,8 @@ open_firewall_ports() {
 
 main() {
     parse_args "$@"
+
+    TEMP_DIR="$(mktemp -d)" || { echo "Failed to create temp directory" >&2; exit 1; }
 
     if [[ "${DO_UNINSTALL}" == "true" ]]; then
         do_uninstall
@@ -2818,9 +2887,17 @@ main() {
         exit 0
     fi
 
+    if [[ "${DRY_RUN}" != "true" ]]; then
+        mkdir -p "${ZROK_INSTALL_DIR}"
+        local log_file="${ZROK_INSTALL_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
+        exec > >(tee -a "${log_file}") 2>&1
+        log_info "Logging to ${log_file}"
+    fi
+
     check_prerequisites
     check_ports
     check_dns
+    check_resources
     open_firewall_ports
 
     echo ""
@@ -2896,18 +2973,18 @@ setup_dynamic_dns() {
         log_info "Configuring DDNS with your Cloudflare token..."
 
         local config_dir="${HOME}/.zrok-ddns"
-        mkdir -p "${config_dir}"
+        mkdir -p -m 700 "${config_dir}"
 
         local zone_root
         zone_root="$(echo "${ZROK_DNS_ZONE}" | awk -F. '{print $(NF-1)"."$NF}')"
 
+        install -m 600 /dev/null "${config_dir}/config"
         cat > "${config_dir}/config" << DDNSCFG
 DDNS_DOMAIN="${ZROK_DNS_ZONE}"
 CF_API_TOKEN="${DNS_TOKEN}"
 CF_ZONE_ROOT="${zone_root}"
 DDNS_INTERVAL="5"
 DDNSCFG
-        chmod 600 "${config_dir}/config"
 
         log_info "Running initial DNS update..."
         bash "${ddns_script}" --run 2>&1 || true
@@ -2975,4 +3052,6 @@ PLISTEOF
     echo ""
 }
 
-main "$@"
+if [[ "${1:-}" != "--source-only" ]]; then
+    main "$@"
+fi

@@ -334,7 +334,8 @@ do_setup() {
     log_success "Zone found: ${zone_root} (${zone_id})"
 
     # Save config
-    mkdir -p "${CONFIG_DIR}"
+    mkdir -p -m 700 "${CONFIG_DIR}"
+    install -m 600 /dev/null "${CONFIG_FILE}"
     cat > "${CONFIG_FILE}" << CFGEOF
 # zrok DDNS config — generated $(date -u +%Y-%m-%dT%H:%M:%SZ)
 DDNS_DOMAIN="${domain}"
@@ -342,7 +343,6 @@ CF_API_TOKEN="${token}"
 CF_ZONE_ROOT="${zone_root}"
 DDNS_INTERVAL="${interval}"
 CFGEOF
-    chmod 600 "${CONFIG_FILE}"
     log_success "Config saved to ${CONFIG_FILE}"
 
     # Initial update

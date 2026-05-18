@@ -13,6 +13,10 @@
 
 set -euo pipefail
 
+TEMP_FILES=()
+cleanup_temp() { rm -f "${TEMP_FILES[@]}" 2>/dev/null; }
+trap cleanup_temp EXIT
+
 # ============================================================================
 # CONSTANTS
 # ============================================================================
@@ -169,6 +173,21 @@ add_route() {
         return 1
     fi
 
+    if [[ ! "${domain}" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?(\.[a-zA-Z]{2,})+$ ]]; then
+        log_error "Invalid domain format: ${domain}"
+        return 1
+    fi
+
+    if [[ ! "${backend_ip}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        log_error "Invalid IP address: ${backend_ip}"
+        return 1
+    fi
+
+    if [[ ! "${backend_ports}" =~ ^[0-9]+$ ]] || [[ "${backend_ports}" -lt 1 ]] || [[ "${backend_ports}" -gt 65535 ]]; then
+        log_error "Invalid port: ${backend_ports}"
+        return 1
+    fi
+
     # Validate backend is reachable
     if ping -c 1 -W 2 "${backend_ip}" &>/dev/null; then
         log_success "Backend ${backend_ip} is reachable"
@@ -184,7 +203,8 @@ add_route() {
 
     # Add to routes file
     local tmp
-    tmp="$(mktemp)"
+    tmp="$(mktemp)" || { log_error "Failed to create temp file"; return 1; }
+    TEMP_FILES+=("${tmp}")
     jq --arg d "${domain}" --arg ip "${backend_ip}" --arg p "${backend_ports}" \
         '.routes += [{"domain": $d, "backend_ip": $ip, "backend_port": $p}]' \
         "${ROUTES_FILE}" > "${tmp}" && mv "${tmp}" "${ROUTES_FILE}"
@@ -207,7 +227,8 @@ remove_route() {
     fi
 
     local tmp
-    tmp="$(mktemp)"
+    tmp="$(mktemp)" || { log_error "Failed to create temp file"; return 1; }
+    TEMP_FILES+=("${tmp}")
     jq --arg d "${domain}" '.routes = [.routes[] | select(.domain != $d)]' \
         "${ROUTES_FILE}" > "${tmp}" && mv "${tmp}" "${ROUTES_FILE}"
 
