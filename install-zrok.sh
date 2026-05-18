@@ -2845,9 +2845,14 @@ main() {
 
     print_banner
 
-    if [[ "$(uname -s)" != "Darwin" ]] && [[ "$(id -u)" -ne 0 ]]; then
+    if [[ "$(uname -s)" == "Darwin" ]] && [[ "$(id -u)" -eq 0 ]]; then
+        log_warn "Running as root on macOS is not recommended."
+        log_warn "Files will be owned by root — use without sudo instead."
+        if ! confirm "Continue as root?"; then
+            exit 0
+        fi
+    elif [[ "$(uname -s)" != "Darwin" ]] && [[ "$(id -u)" -ne 0 ]]; then
         log_error "This script must be run as root (or with sudo)."
-        log_error "On macOS, root is not required for Docker Compose mode."
         exit 1
     fi
 
