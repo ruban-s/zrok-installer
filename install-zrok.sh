@@ -1447,6 +1447,22 @@ fetch_compose_files() {
     fi
 
     chmod +x "${ZROK_INSTALL_DIR}/entrypoint-init.bash" 2>/dev/null || true
+
+    log_substep "Downloading zrok2-bootstrap.bash..."
+    if retry_curl -sSfL "https://raw.githubusercontent.com/openziti/zrok/main/nfpm/zrok2-bootstrap.bash" \
+        -o "${ZROK_INSTALL_DIR}/zrok2-bootstrap.bash" 2>/dev/null; then
+        true
+    else
+        log_warn "Failed to download zrok2-bootstrap.bash"
+    fi
+
+    if [[ -f "${ZROK_INSTALL_DIR}/compose.yml" ]]; then
+        sed -i.bak 's|../../../nfpm/zrok2-bootstrap.bash|./zrok2-bootstrap.bash|g' \
+            "${ZROK_INSTALL_DIR}/compose.yml" 2>/dev/null || \
+        sed -i '' 's|../../../nfpm/zrok2-bootstrap.bash|./zrok2-bootstrap.bash|g' \
+            "${ZROK_INSTALL_DIR}/compose.yml" 2>/dev/null || true
+        rm -f "${ZROK_INSTALL_DIR}/compose.yml.bak"
+    fi
 }
 
 generate_docker_env() {
