@@ -1385,7 +1385,7 @@ install_docker_compose() {
     if [[ "${DRY_RUN}" == "true" ]]; then
         log_info "[DRY RUN] Would run: docker compose up --build --detach"
     else
-        docker compose down --remove-orphans 2>/dev/null || true
+        docker compose down 2>/dev/null || true
         docker compose up --build --detach --wait 2>&1 || {
             log_error "Docker Compose failed to start. Check logs:"
             log_error "  cd ${ZROK_INSTALL_DIR} && docker compose logs"
