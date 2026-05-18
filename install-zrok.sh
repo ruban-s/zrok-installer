@@ -1369,7 +1369,10 @@ install_docker_compose() {
 
     log_step "Generating environment configuration"
     generate_docker_env
-    log_success ".env generated"
+    if [[ "${TLS_PROVIDER}" == "caddy" ]]; then
+        generate_docker_caddyfile
+    fi
+    log_success "Configuration generated"
 
     log_step "Pulling container images"
     if [[ "${DRY_RUN}" == "true" ]]; then
@@ -1549,6 +1552,47 @@ ENVEOF
     fi
 
     chmod 600 "${env_file}"
+}
+
+generate_docker_caddyfile() {
+    local caddyfile="${ZROK_INSTALL_DIR}/Caddyfile"
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_info "[DRY RUN] Would generate ${caddyfile}"
+        return 0
+    fi
+
+    cat > "${caddyfile}" << 'CADDYEOF'
+{
+    acme_ca {$CADDY_ACME_API}
+}
+
+zrok2.{$ZROK2_DNS_ZONE} {
+    reverse_proxy zrok2-controller:{$ZROK2_CTRL_PORT}
+    tls {
+        dns {$CADDY_DNS_PLUGIN} {$CADDY_DNS_PLUGIN_TOKEN}
+    }
+}
+
+*.{$ZROK2_DNS_ZONE} {
+    reverse_proxy zrok2-frontend:{$ZROK2_FRONTEND_PORT}
+    tls {
+        dns {$CADDY_DNS_PLUGIN} {$CADDY_DNS_PLUGIN_TOKEN}
+    }
+}
+
+ziti.{$ZROK2_DNS_ZONE} {
+    reverse_proxy https://ziti-controller:{$ZITI_CTRL_PORT} {
+        transport http {
+            tls_insecure_skip_verify
+        }
+    }
+    tls {
+        dns {$CADDY_DNS_PLUGIN} {$CADDY_DNS_PLUGIN_TOKEN}
+    }
+}
+CADDYEOF
+    log_substep "Caddyfile generated"
 }
 
 get_dns_plugin_name() {
