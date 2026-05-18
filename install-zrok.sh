@@ -1345,7 +1345,7 @@ print_config_summary() {
 # ============================================================================
 
 install_docker_compose() {
-    TOTAL_STEPS=7
+    TOTAL_STEPS=8
     CURRENT_STEP=0
 
     if [[ "${ENABLE_OAUTH}" == "true" ]]; then TOTAL_STEPS=$((TOTAL_STEPS + 1)); fi
@@ -1371,11 +1371,22 @@ install_docker_compose() {
     generate_docker_env
     log_success ".env generated"
 
+    log_step "Pulling container images"
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_info "[DRY RUN] Would pull container images"
+    else
+        docker compose pull 2>&1 || {
+            log_warn "Some images could not be pulled (may build locally)"
+        }
+        log_success "Images ready"
+    fi
+
     log_step "Starting Docker Compose services"
     if [[ "${DRY_RUN}" == "true" ]]; then
         log_info "[DRY RUN] Would run: docker compose up --build --detach"
     else
-        docker compose up --build --detach 2>&1 | tail -5 || {
+        docker compose down --remove-orphans 2>/dev/null || true
+        docker compose up --build --detach --wait 2>&1 || {
             log_error "Docker Compose failed to start. Check logs:"
             log_error "  cd ${ZROK_INSTALL_DIR} && docker compose logs"
             exit 1
