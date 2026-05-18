@@ -21,7 +21,7 @@ readonly INSTALLER_VERSION="1.0.0"
 readonly DEFAULT_INSTALL_DIR="/opt/zrok-instance"
 readonly STATE_FILE_NAME=".install-state.json"
 readonly CREDENTIALS_FILE_NAME=".credentials"
-readonly ZROK_FETCH_URL="https://raw.githubusercontent.com/openziti/zrok/main/docker/compose/zrok2-instance/fetch.bash"
+readonly ZROK_COMPOSE_BASE_URL="https://get.openziti.io/zrok2-instance"
 readonly ZROK_INSTALL_URL="https://get.openziti.io/install.bash"
 readonly DOCKER_INSTALL_URL="https://get.docker.com"
 
@@ -1164,12 +1164,9 @@ install_docker_compose() {
 
     log_step "Fetching Docker Compose files"
     if [[ "${DRY_RUN}" == "true" ]]; then
-        log_info "[DRY RUN] Would fetch compose files from ${ZROK_FETCH_URL}"
+        log_info "[DRY RUN] Would fetch compose files from ${ZROK_COMPOSE_BASE_URL}"
     else
-        curl -sSf "${ZROK_FETCH_URL}" | bash -s "${ZROK_INSTALL_DIR}" &>/dev/null || {
-            log_warn "Fetch script failed; trying GitHub ZIP fallback..."
-            fetch_compose_fallback
-        }
+        fetch_compose_files
         if [[ ! -f "${ZROK_INSTALL_DIR}/compose.yml" ]]; then
             log_error "compose.yml not found after fetch. Installation cannot continue."
             exit 1
@@ -1225,21 +1222,37 @@ install_docker_compose() {
     fi
 }
 
-fetch_compose_fallback() {
-    local tmpdir
-    tmpdir="$(mktemp -d)"
-    log_substep "Downloading zrok compose files from GitHub..."
-    curl -sSfL "https://github.com/openziti/zrok/archive/refs/heads/main.zip" -o "${tmpdir}/main.zip" || {
-        log_error "Failed to download zrok repository"
+fetch_compose_files() {
+    local compose_files=("compose.yml" "compose.caddy.yml" ".env.example" "entrypoint-init.bash")
+
+    if [[ "${TLS_PROVIDER}" == "traefik" ]]; then
+        compose_files+=("compose.traefik.yml")
+    fi
+
+    local failed=false
+    for f in "${compose_files[@]}"; do
+        log_substep "Downloading ${f}..."
+        if curl -sSfL "${ZROK_COMPOSE_BASE_URL}/${f}" -o "${ZROK_INSTALL_DIR}/${f}" 2>/dev/null; then
+            true
+        else
+            log_warn "Failed to download ${f} from CDN, trying GitHub..."
+            if curl -sSfL "https://raw.githubusercontent.com/openziti/zrok/main/docker/compose/zrok2-instance/${f}" \
+                -o "${ZROK_INSTALL_DIR}/${f}" 2>/dev/null; then
+                true
+            else
+                log_error "Failed to download ${f}"
+                failed=true
+            fi
+        fi
+    done
+
+    if [[ "${failed}" == "true" ]]; then
+        log_error "Some compose files could not be downloaded."
+        log_error "Check network connectivity and try again."
         exit 1
-    }
-    unzip -q -j -d "${ZROK_INSTALL_DIR}" "${tmpdir}/main.zip" '*/docker/compose/zrok2-instance/*' || {
-        log_error "Failed to extract compose files"
-        log_error "The zrok repository structure may have changed."
-        log_error "Check: https://github.com/openziti/zrok/tree/main/docker/compose"
-        exit 1
-    }
-    rm -rf "${tmpdir}"
+    fi
+
+    chmod +x "${ZROK_INSTALL_DIR}/entrypoint-init.bash" 2>/dev/null || true
 }
 
 generate_docker_env() {
