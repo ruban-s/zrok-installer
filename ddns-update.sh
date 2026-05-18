@@ -16,9 +16,12 @@ set -euo pipefail
 # CONSTANTS
 # ============================================================================
 
+# shellcheck disable=SC2034
 readonly SCRIPT_VERSION="1.0.0"
-readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/${SCRIPT_NAME}"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
+SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/${SCRIPT_NAME}"
+readonly SCRIPT_PATH
 
 CONFIG_DIR="${HOME}/.zrok-ddns"
 CONFIG_FILE="${CONFIG_DIR}/config"
@@ -334,7 +337,7 @@ do_setup() {
     log_success "Zone found: ${zone_root} (${zone_id})"
 
     # Save config
-    mkdir -p -m 700 "${CONFIG_DIR}"
+    mkdir -p "${CONFIG_DIR}" && chmod 700 "${CONFIG_DIR}"
     install -m 600 /dev/null "${CONFIG_FILE}"
     cat > "${CONFIG_FILE}" << CFGEOF
 # zrok DDNS config — generated $(date -u +%Y-%m-%dT%H:%M:%SZ)

@@ -21,6 +21,7 @@ trap cleanup_temp EXIT
 # CONSTANTS
 # ============================================================================
 
+# shellcheck disable=SC2034
 readonly SCRIPT_VERSION="1.0.0"
 readonly CONFIG_DIR="/etc/zrok-gateway"
 readonly ROUTES_FILE="${CONFIG_DIR}/routes.json"

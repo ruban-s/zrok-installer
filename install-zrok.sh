@@ -26,8 +26,11 @@ readonly ZROK_INSTALL_URL="https://get.openziti.io/install.bash"
 readonly DOCKER_INSTALL_URL="https://get.docker.com"
 
 readonly REQUIRED_PORTS=(443 18080 8080 3022)
+# shellcheck disable=SC2034
 readonly SUPPORTED_TLS_PROVIDERS=("caddy" "traefik" "nginx")
+# shellcheck disable=SC2034
 readonly SUPPORTED_DNS_PROVIDERS=("cloudflare" "digitalocean" "route53" "godaddy" "namecheap")
+# shellcheck disable=SC2034
 readonly SUPPORTED_MODES=("docker" "baremetal")
 
 # ============================================================================
@@ -344,7 +347,7 @@ detect_os() {
             return
             ;;
         Linux)
-            PLATFORM="linux"
+            PLATFORM="linux" # shellcheck disable=SC2034
             ;;
         *)
             log_error "Unsupported platform: ${kernel}"
@@ -500,7 +503,7 @@ detect_init_system() {
         return
     fi
     if [[ -d /run/systemd/system ]] || systemctl --version &>/dev/null 2>&1; then
-        HAS_SYSTEMD=true
+        HAS_SYSTEMD=true # shellcheck disable=SC2034
         log_success "Init system: systemd"
     else
         log_error "systemd not detected. This installer requires systemd (or macOS with Docker)."
@@ -566,7 +569,7 @@ check_prerequisites() {
     fi
 
     if [[ "${DEPLOY_MODE}" == "baremetal" ]]; then
-        for cmd in tar; do
+        for cmd in "tar"; do # shellcheck disable=SC2043
             if ! command -v "${cmd}" &>/dev/null; then
                 missing+=("${cmd}")
             fi
@@ -1205,8 +1208,7 @@ validate_dns_token() {
             log_substep "Verifying AWS credentials..."
             local aws_key="${DNS_TOKEN%%:*}"
             local aws_secret="${DNS_TOKEN#*:}"
-            local aws_date aws_auth_header aws_response
-            aws_date="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date -u +%Y%m%dT%H%M%SZ)"
+            local aws_response
             aws_response="$(AWS_ACCESS_KEY_ID="${aws_key}" AWS_SECRET_ACCESS_KEY="${aws_secret}" \
                 curl -sf "https://sts.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15" \
                 --aws-sigv4 "aws:amz:us-east-1:sts" \
@@ -2147,7 +2149,7 @@ http:
 DYNEOF
 
     if [[ -n "${provider_env}" ]]; then
-        mkdir -p -m 700 /etc/traefik
+        mkdir -p /etc/traefik && chmod 700 /etc/traefik
         install -m 600 /dev/null /etc/traefik/.env
         echo -e "${provider_env}" > /etc/traefik/.env
     fi
@@ -2889,7 +2891,8 @@ main() {
 
     if [[ "${DRY_RUN}" != "true" ]]; then
         mkdir -p "${ZROK_INSTALL_DIR}"
-        local log_file="${ZROK_INSTALL_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
+        local log_file
+        log_file="${ZROK_INSTALL_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
         exec > >(tee -a "${log_file}") 2>&1
         log_info "Logging to ${log_file}"
     fi
@@ -2973,7 +2976,7 @@ setup_dynamic_dns() {
         log_info "Configuring DDNS with your Cloudflare token..."
 
         local config_dir="${HOME}/.zrok-ddns"
-        mkdir -p -m 700 "${config_dir}"
+        mkdir -p "${config_dir}" && chmod 700 "${config_dir}"
 
         local zone_root
         zone_root="$(echo "${ZROK_DNS_ZONE}" | awk -F. '{print $(NF-1)"."$NF}')"
