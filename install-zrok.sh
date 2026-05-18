@@ -130,7 +130,7 @@ confirm() {
     fi
     echo -n -e "$(_c "${_YELLOW}")  [?]$(_c "${_RESET}") ${prompt} [y/N] "
     local answer
-    read -r answer
+    read -r answer < /dev/tty
     [[ "${answer}" =~ ^[Yy]$ ]]
 }
 
@@ -151,7 +151,7 @@ prompt_input() {
 
     echo -n -e "$(_c "${_YELLOW}")  [?]$(_c "${_RESET}") ${prompt}${display_default}: "
     local answer
-    read -r answer
+    read -r answer < /dev/tty
     answer="${answer:-${default}}"
 
     if [[ -z "${answer}" ]]; then
@@ -174,7 +174,7 @@ prompt_secret() {
 
     echo -n -e "$(_c "${_YELLOW}")  [?]$(_c "${_RESET}") ${prompt}: "
     local answer
-    read -rs answer
+    read -rs answer < /dev/tty
     echo ""
 
     eval "${varname}='${answer}'"
@@ -200,7 +200,7 @@ prompt_choice() {
 
     echo -n "       Choice: "
     local choice
-    read -r choice
+    read -r choice < /dev/tty
 
     if [[ -z "${choice}" ]] || [[ "${choice}" -lt 1 ]] || [[ "${choice}" -gt ${#options[@]} ]]; then
         log_error "Invalid choice."
@@ -714,7 +714,7 @@ detect_existing_install() {
         echo -e "  $(_c "${_BOLD}")3)$(_c "${_RESET}") Cancel"
         echo -n "  Choice: "
         local choice
-        read -r choice
+        read -r choice < /dev/tty
 
         case "${choice}" in
             1) log_info "Reconfiguring existing installation..." ;;
@@ -876,7 +876,7 @@ prompt_required_settings() {
     if [[ -z "${ZROK_USER_PWD}" ]]; then
         echo -n -e "$(_c "${_YELLOW}")  [?]$(_c "${_RESET}") Admin password (blank = auto-generate): "
         local pw
-        read -rs pw
+        read -rs pw < /dev/tty
         echo ""
         if [[ -n "${pw}" ]]; then
             ZROK_USER_PWD="${pw}"
@@ -992,7 +992,7 @@ prompt_optional_modules() {
     echo -e "  $(_c "${_BOLD}")A)$(_c "${_RESET}") All of the above"
     echo -n "  Enter choices (e.g., 1 3 or A): "
     local choices
-    read -r choices
+    read -r choices < /dev/tty
 
     if [[ "${choices}" =~ [Aa] ]]; then
         ENABLE_OAUTH=true
@@ -1011,14 +1011,14 @@ prompt_optional_modules() {
         log_info "OAuth requires GitHub and/or Google OAuth app credentials."
         if [[ -z "${OAUTH_GITHUB_ID}" ]]; then
             echo -n -e "$(_c "${_YELLOW}")  [?]$(_c "${_RESET}") GitHub OAuth Client ID (blank to skip GitHub): "
-            read -r OAUTH_GITHUB_ID
+            read -r OAUTH_GITHUB_ID < /dev/tty
             if [[ -n "${OAUTH_GITHUB_ID}" ]]; then
                 prompt_secret "GitHub OAuth Client Secret" "OAUTH_GITHUB_SECRET"
             fi
         fi
         if [[ -z "${OAUTH_GOOGLE_ID}" ]]; then
             echo -n -e "$(_c "${_YELLOW}")  [?]$(_c "${_RESET}") Google OAuth Client ID (blank to skip Google): "
-            read -r OAUTH_GOOGLE_ID
+            read -r OAUTH_GOOGLE_ID < /dev/tty
             if [[ -n "${OAUTH_GOOGLE_ID}" ]]; then
                 prompt_secret "Google OAuth Client Secret" "OAUTH_GOOGLE_SECRET"
             fi
