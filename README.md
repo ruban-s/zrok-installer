@@ -101,6 +101,111 @@ For any local deployment, forward these ports from your router to your machine:
 | 18080 | zrok API | TCP |
 | 3022 | OpenZiti | TCP |
 
+How to configure port forwarding varies by router. General steps:
+
+1. Find your machine's local IP: `hostname -I` (Linux) or `ifconfig | grep inet` (macOS)
+2. Log into your router admin panel (usually `192.168.1.1` or `192.168.0.1`)
+3. Find "Port Forwarding" or "NAT" settings
+4. Create rules for each port above → your machine's local IP
+
+## Multiple Machines / Multiple Domains
+
+When you have multiple machines on the same network, each running a separate zrok instance with a different domain, you need a **gateway proxy**.
+
+### The Problem
+
+One router = one public IP. Port 443 can only forward to ONE machine.
+
+```text
+Internet → Router (public-ip:443) → ??? which machine?
+
+  192.168.1.10 (zrok — share.example.com)
+  192.168.1.20 (zrok — share.company.com)
+  192.168.1.30 (zrok — share.other.com)
+```
+
+### Solution: Gateway Proxy
+
+One machine acts as a gateway, receiving all traffic and routing by domain name to the correct backend:
+
+```text
+Internet
+   ↓
+Router (:443 forwarded)
+   ↓
+Gateway machine (192.168.1.10)
+   ├── share.example.com   → 192.168.1.20 (zrok instance 1)
+   ├── share.company.com   → 192.168.1.30 (zrok instance 2)
+   └── share.other.com     → 192.168.1.40 (zrok instance 3)
+```
+
+### Setup
+
+**1. On the gateway machine:**
+
+```bash
+curl -O https://raw.githubusercontent.com/ruban-s/zrok-installer/main/setup-gateway.sh
+chmod +x setup-gateway.sh
+sudo bash setup-gateway.sh --setup
+```
+
+This installs Caddy or Nginx, then prompts you to add domain→backend mappings:
+
+```text
+  Add Domain Route
+
+  Domain: share.example.com
+  Backend machine IP: 192.168.1.20
+  zrok HTTPS port: 443
+
+  ✓ Route added: share.example.com → 192.168.1.20:443
+```
+
+**2. On each backend machine:**
+
+Run `install-zrok.sh` normally. The gateway handles TLS and routing.
+
+```bash
+sudo bash install-zrok.sh \
+  --domain share.example.com \
+  --email admin@example.com \
+  --mode docker --tls caddy
+```
+
+**3. Port forwarding (router):**
+
+Forward ALL ports to the gateway machine only:
+
+```text
+Router → 192.168.1.10 (gateway)
+  443   → 192.168.1.10
+  8080  → 192.168.1.10
+  18080 → 192.168.1.10
+  3022  → 192.168.1.10
+```
+
+### Managing Gateway Routes
+
+```bash
+sudo bash setup-gateway.sh --add            # add new domain
+sudo bash setup-gateway.sh --list           # show all routes
+sudo bash setup-gateway.sh --remove-route   # remove a domain
+sudo bash setup-gateway.sh --uninstall      # remove gateway
+```
+
+### Alternative: Single Instance, Multiple Users
+
+If all users can share one domain, run ONE zrok instance. Each user gets a unique subdomain automatically:
+
+```text
+One zrok instance on share.example.com:
+  User A shares → app1.share.example.com
+  User B shares → app2.share.example.com
+  User C shares → db.share.example.com
+```
+
+No gateway needed. Just one machine, one port forward, multiple users.
+
 ## Dynamic DNS Updater
 
 Included as a standalone script for local deployments with dynamic IPs.
@@ -329,8 +434,9 @@ bash ddns-update.sh --remove     # stop auto-updates
 
 ```text
 zrok-installer/
-├── install-zrok.sh    # Main installer (cloud + local, Docker + bare metal)
-├── ddns-update.sh     # Dynamic DNS updater (Cloudflare, standalone)
+├── install-zrok.sh      # Main installer (cloud + local, Docker + bare metal)
+├── ddns-update.sh       # Dynamic DNS updater (Cloudflare, standalone)
+├── setup-gateway.sh     # Gateway proxy for multi-domain local networks
 ├── README.md
 └── LICENSE
 ```
