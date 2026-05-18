@@ -1013,8 +1013,60 @@ validate_dns_token() {
                 fi
             fi
             ;;
-        *)
-            log_info "Token validation not available for ${DNS_PROVIDER} — skipping"
+        route53)
+            log_substep "Verifying AWS credentials..."
+            local aws_key="${DNS_TOKEN%%:*}"
+            local aws_secret="${DNS_TOKEN#*:}"
+            local aws_date aws_auth_header aws_response
+            aws_date="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date -u +%Y%m%dT%H%M%SZ)"
+            aws_response="$(AWS_ACCESS_KEY_ID="${aws_key}" AWS_SECRET_ACCESS_KEY="${aws_secret}" \
+                curl -sf "https://sts.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15" \
+                --aws-sigv4 "aws:amz:us-east-1:sts" \
+                --user "${aws_key}:${aws_secret}" 2>/dev/null || echo "")"
+            if echo "${aws_response}" | grep -q "GetCallerIdentityResult"; then
+                local aws_account
+                aws_account="$(echo "${aws_response}" | grep -oP '<Account>\K[^<]+' || echo "verified")"
+                log_success "AWS credentials valid (account: ${aws_account})"
+            else
+                log_warn "AWS credentials verification failed"
+                log_warn "Ensure the IAM user/role has Route53 permissions"
+                if ! confirm "Continue with these credentials anyway?"; then
+                    exit 1
+                fi
+            fi
+            ;;
+        godaddy)
+            log_substep "Verifying GoDaddy API key..."
+            local gd_response
+            gd_response="$(curl -sf \
+                -H "Authorization: sso-key ${DNS_TOKEN}" \
+                "https://api.godaddy.com/v1/domains?limit=1" 2>/dev/null || echo "error")"
+            if [[ "${gd_response}" != "error" ]] && ! echo "${gd_response}" | grep -qi "UNABLE_TO_AUTHENTICATE"; then
+                log_success "GoDaddy API key valid"
+            else
+                log_warn "GoDaddy API key verification failed"
+                log_info "Expected format: <key>:<secret> (e.g., abcdef12345:ABCXYZ98765)"
+                if ! confirm "Continue with this key anyway?"; then
+                    exit 1
+                fi
+            fi
+            ;;
+        namecheap)
+            log_substep "Verifying Namecheap API key..."
+            local nc_response
+            nc_response="$(curl -sf \
+                "https://api.namecheap.com/xml.response?ApiUser=${DNS_TOKEN%%:*}&ApiKey=${DNS_TOKEN#*:}&UserName=${DNS_TOKEN%%:*}&Command=namecheap.domains.getList&ClientIp=0.0.0.0&PageSize=1" \
+                2>/dev/null || echo "")"
+            if echo "${nc_response}" | grep -q 'Status="OK"'; then
+                log_success "Namecheap API key valid"
+            else
+                log_warn "Namecheap API key verification failed"
+                log_info "Expected format: <apiuser>:<apikey>"
+                log_info "Ensure your IP is whitelisted at ap.www.namecheap.com"
+                if ! confirm "Continue with this key anyway?"; then
+                    exit 1
+                fi
+            fi
             ;;
     esac
 }
