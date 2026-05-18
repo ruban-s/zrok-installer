@@ -1375,9 +1375,8 @@ install_docker_compose() {
     if [[ "${DRY_RUN}" == "true" ]]; then
         log_info "[DRY RUN] Would pull container images"
     else
-        docker compose pull 2>&1 || {
-            log_warn "Some images could not be pulled (may build locally)"
-        }
+        docker compose pull --quiet 2>/dev/null &
+        spinner $! "Pulling container images..."
         log_success "Images ready"
     fi
 
@@ -1386,7 +1385,7 @@ install_docker_compose() {
         log_info "[DRY RUN] Would run: docker compose up --build --detach"
     else
         docker compose down 2>/dev/null || true
-        docker compose up --build --detach --wait 2>&1 || {
+        docker compose up --build --detach 2>&1 | tail -1 || {
             log_error "Docker Compose failed to start. Check logs:"
             log_error "  cd ${ZROK_INSTALL_DIR} && docker compose logs"
             exit 1
@@ -1566,26 +1565,27 @@ wait_for_docker_healthy() {
     local elapsed=0
     local interval=5
 
-    log_substep "Waiting up to ${timeout}s for services..."
-
     while [[ ${elapsed} -lt ${timeout} ]]; do
-        local unhealthy
-        unhealthy="$(docker compose ps --format json 2>/dev/null | jq -r 'select(.Health != "healthy" and .Health != "" and .State == "running") | .Service' 2>/dev/null | wc -l || echo "999")"
+        local running healthy total
+        total="$(docker compose ps --format json 2>/dev/null | jq -r '.Service' 2>/dev/null | wc -l | tr -d ' ')"
+        running="$(docker compose ps --format json 2>/dev/null | jq -r 'select(.State == "running") | .Service' 2>/dev/null | wc -l | tr -d ' ')"
+        healthy="$(docker compose ps --format json 2>/dev/null | jq -r 'select(.Health == "healthy") | .Service' 2>/dev/null | wc -l | tr -d ' ')"
 
-        local running
-        running="$(docker compose ps --format json 2>/dev/null | jq -r 'select(.State == "running") | .Service' 2>/dev/null | wc -l || echo "0")"
+        printf "\r       ⠿ Services: %s/%s running, %s healthy  (%ds/%ds)  " \
+            "${running}" "${total}" "${healthy}" "${elapsed}" "${timeout}"
 
-        if [[ "${running}" -gt 0 ]] && [[ "${unhealthy}" -eq 0 ]]; then
-            log_success "All services healthy"
+        if [[ "${running}" -gt 0 ]] && [[ "${healthy}" -ge "${running}" ]]; then
+            printf "\r%-70s\r" " "
+            log_success "All services healthy (${running} running)"
             return 0
         fi
 
         sleep "${interval}"
         elapsed=$((elapsed + interval))
-        log_substep "Waiting... (${elapsed}s / ${timeout}s)"
     done
 
-    log_warn "Timeout waiting for services. Checking status..."
+    printf "\r%-70s\r" " "
+    log_warn "Timeout waiting for services."
     docker compose ps
     if ! confirm "Some services may not be healthy. Continue?"; then
         exit 1

@@ -7,10 +7,13 @@ cd "${SCRIPT_DIR}"
 PASS=0
 FAIL=0
 
+TMPDIR_TEST="$(mktemp -d)"
+trap 'rm -rf "${TMPDIR_TEST}"' EXIT
+
 run_test() {
     local name="$1"
     shift
-    if bash install-zrok.sh "$@" >/dev/null 2>&1; then
+    if bash install-zrok.sh --install-dir "${TMPDIR_TEST}/zrok-$$" "$@" >/dev/null 2>&1; then
         echo "PASS: ${name}"
         PASS=$((PASS + 1))
     else
